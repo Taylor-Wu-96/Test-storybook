@@ -1,0 +1,20 @@
+name: "Percy"
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        uses: ./.github/install-packages
+      - name: Instanll percy
+        run: yarn add @percy/cli @percy/storybook
+      - name: Build storybook
+        run: yarn build-storybook
+      - name: Run visual testing
+        run: npx percy storybook ./storybook-static
+        env:
+          PERCY_TOKEN: ${{ secrets.PERCY_TOKEN }}
