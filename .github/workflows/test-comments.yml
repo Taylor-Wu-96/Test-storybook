@@ -1,0 +1,57 @@
+name: Diff Design System Snapshots
+
+on:
+  pull_request: # Trigger on pull requests
+    branches:
+      - main # Specify branch to monitor for pull requests
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Check out the code from Repo A
+      - name: Checkout Repo A
+        uses: actions/checkout@v4
+
+      # Step 7: Check for Diffs and Create ZIP File
+      - name: Check for Diffs and Create ZIP File
+        id: check_diffs # Add an ID to reference outputs
+        run: |
+
+          if [ -z "$(ls -A diff-output)" ]; then
+            echo "No differences found in snapshots."
+            echo "has_diffs=false" >> $GITHUB_ENV
+            echo "has_diffs=false" >> $GITHUB_OUTPUT
+          else
+            echo "Differences found in snapshots, creating ZIP file."
+            ls diff-output > diff-files.txt  # Save diff filenames
+            zip -r diff-images.zip diff-output
+            echo "has_diffs=true" >> $GITHUB_ENV
+            echo "has_diffs=true" >> $GITHUB_OUTPUT
+          fi
+
+      # Step 8: Add Comments on PR
+      - name: Post Comments on PR
+        if: env.has_diffs == 'true' # Check if diffs were found
+        run: |
+          echo "### 🖼️ Snapshot Diffs Found" > comment_body.txt
+          echo "Differences were found in the following snapshots:" >> comment_body.txt
+          cat diff-files.txt | awk '{printf "- %s\n", $0}' >> comment_body.txt
+          echo "" >> comment_body.txt
+          echo "You can download the diff images using the link below:" >> comment_body.txt
+        shell: bash
+
+      - name: Post No Diff Comments on PR
+        if: env.has_diffs != 'true' # No diffs found
+        run: |
+          echo "### ✅ No Snapshot Diffs" > comment_body.txt
+          echo "No differences were found in the snapshots for this pull request." >> comment_body.txt
+        shell: bash
+
+      - name: Create or Update PR Comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: comment_body.txt
