@@ -1,0 +1,35 @@
+name: List PR File Changes
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: "The base branch to compare"
+        required: true
+        default: "main"
+      head_branch:
+        description: "The head branch to compare"
+        required: true
+
+jobs:
+  compare-branches:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Get the list of changed files
+      - name: Get changed files
+        id: changed-files
+        run: |
+          git fetch origin ${{ github.event.inputs.base_branch }} ${{ github.event.inputs.head_branch }}
+          git diff --name-only origin/${{ github.event.inputs.base_branch }}..origin/${{ github.event.inputs.head_branch }} > changed_files.txt
+          echo "::set-output name=files::$(cat changed_files.txt | paste -sd ',')"
+
+      # Output the result
+      - name: Display changed files
+        run: |
+          echo "Changed files:"
+          cat changed_files.txt
