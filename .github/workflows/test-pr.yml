@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 jobs:
   list-comments:
+    name: List Comments
     permissions:
       pull-requests: write
       statuses: write # Allow to modfiy commit status
@@ -18,7 +20,243 @@ jobs:
       - name: List Github Event
         run: |
           echo "GitHub Event Details:"
+          echo "PR Details: ${{ github.event.pull_request }}"
+          echo "PR Details: ${{toJSON(github.event.issue) }}"
+          echo "--------------------------------------------""
           echo "${{ toJSON(github.event) }}"
           echo "\nEvent Name: ${{ github.event_name }}"
           echo "\nEvent Path: $GITHUB_EVENT_PATH"
           cat $GITHUB_EVENT_PATH
+
+  check-pull-request:
+    name: Get Pull Request Branch Name
+    if: github.event.issue.pull_request != null # Proceed only if it's a PR comment
+    outputs:
+      base_branch: ${{ steps.get_pr_details.outputs.base_branch }}
+      head_branch: ${{ steps.get_pr_details.outputs.head_branch }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up GitHub CLI
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Get PR details
+        id: get_pr_details
+        run: |
+          PR_URL="${{ github.event.issue.pull_request.url }}"
+          gh api "$PR_URL" > pr_details.json
+          BASE_BRANCH=$(jq -r .base.ref pr_details.json)
+          HEAD_BRANCH=$(jq -r .head.ref pr_details.json)
+          echo "Base branch: $BASE_BRANCH"
+          echo "Head branch: $HEAD_BRANCH"
+          echo "::set-output name=base_branch::$BASE_BRANCH"
+          echo "::set-output name=head_branch::$HEAD_BRANCH"
+
+  get-pr-details:
+    name: Get PR sha and pr number
+    runs-on: ubuntu-latest
+    needs: check-pull-request
+    if: ${{ contains( needs.check-pull-request.outputs.base_branch, 'taylor') }}
+    outputs:
+      prNumber: ${{ steps.pr-details.outputs.prNumber }}
+      sha: ${{ steps.pr-details.outputs.sha }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Fetch PR details
+        id: pr-details
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const pullRequest = issue && issue.pull_request;
+
+            if (pullRequest) {
+              const prNumber = issue.number;
+              const sha = context.payload.comment.node_id; // Node ID can represent the comment reference
+              console.log(`PR Number: ${prNumber}`);
+              console.log(`SHA: ${sha}`);
+              core.setOutput('prNumber', prNumber);
+              core.setOutput('sha', sha);
+              return { prNumber, sha };
+            } else {
+              core.setFailed('This workflow can only run on comments associated with pull requests.');
+            }
+          result-encoding: json
+
+  feature-pr-blocker:
+    name: Feature PR Approval Committers Blocker
+    needs: [get-pr-details, check-pull-request]
+    if: ${{ contains( needs.check-pull-request.outputs.base_branch, 'taylor') == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: validate PR comments
+        id: get-comments
+        uses: actions/github-script@v7
+        env:
+          pr_number: ${{ needs.get-pr-details.outputs.prNumber }}
+          sha: ${{ needs.get-pr-details.outputs.sha }}
+        with:
+          script: |
+            const prNumber = process.env.pr_number;
+            const sha = process.env.sha;
+            if (isNaN(prNumber)) {
+              core.setFailed('Invalid PR number');
+              return;
+            }
+            try {
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100, // Maximum items per page
+              });
+              
+              console.log(`Found ${comments.data.length} comments`);
+              console.log(comments.data);
+              
+              // Check for checklist comment 
+              // Please align the checklist comment with the format of the checklist comment in the feature-pr-blocker.yml
+              const checklistComment = comments.data.filter(comment => 
+                comment.body.toLowerCase().includes('> #### ✅ feature code changes history approval checklist')
+              );
+              
+              if (!checklistComment || checklistComment.length === 0) {
+                core.setFailed('No checklist comment found');
+                return;
+              }
+              
+              // Check for completed checkboxes
+              const hasCheckedBoxes = checklistComment.some(comment => /\[\s*[xX]\s*\]/.test(comment.body));
+              if (!hasCheckedBoxes) {
+                core.setFailed('No checkboxes are checked in the checklist');
+                return;
+              }
+              
+              console.log('Checklist validation passed');
+              return JSON.stringify(comments.data);
+            } catch (error) {
+              core.setFailed(`Failed to fetch comments: ${error.message}`);
+              return;
+            }
+          result-encoding: string
+  release-pr-blocker:
+    name: Release PR Approval Committers Blocker
+    needs: [get-pr-details, check-pull-request]
+    if: ${{ contains( needs.check-pull-request.outputs.base_branch, 'taylor') == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: validate PR comments
+        id: get-comments
+        uses: actions/github-script@v7
+        env:
+          pr_number: ${{ needs.get-pr-details.outputs.prNumber }}
+          sha: ${{ needs.get-pr-details.outputs.sha }}
+        with:
+          script: |
+            const prNumber = process.env.pr_number;
+            const sha = process.env.sha;
+            if (isNaN(prNumber)) {
+              core.setFailed('Invalid PR number');
+              return;
+            }
+            try {
+              const comments = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100, // Maximum items per page
+              });
+              
+              console.log(`Found ${comments.data.length} comments`);
+              console.log(comments.data);
+              
+              // Check for checklist comment 
+              // Please align the checklist comment with the format of the checklist comment in the release-pr-blocker.yml
+              const checklistComment = comments.data.filter(comment => 
+                  comment.body.toLowerCase().includes('> #### ✅ release pr committers approvals checklist')
+              );
+              
+              if (!checklistComment || checklistComment.length === 0) {
+                core.setFailed('No checklist comment found');
+                return;
+              }
+              
+              // Check for completed checkboxes
+              const hasCheckedBoxes = checklistComment.some(comment => /\[\s*[xX]\s*\]/.test(comment.body));
+              if (!hasCheckedBoxes) {
+                core.setFailed('No checkboxes are checked in the checklist');
+                return;
+              }
+              
+              console.log('Checklist validation passed');
+              return JSON.stringify(comments.data);
+            } catch (error) {
+              core.setFailed(`Failed to fetch comments: ${error.message}`);
+              return;
+            }
+          result-encoding: string
+
+  create-commit-status:
+    name: Create Commit Status
+    runs-on: ubuntu-latest
+    needs: [feature-pr-blocker, release-pr-blocker, get-pr-details]
+    # Run this job after either feature-pr-blocker or release-pr-blocker completes
+    if: |
+      always() &&
+      (needs.feature-pr-blocker.result != 'skipped' || needs.release-pr-blocker.result != 'skipped')
+    steps:
+      - name: Update Commit Status
+        uses: actions/github-script@v7
+        env:
+          SHA: ${{ needs.get-pr-details.outputs.sha }}
+          FEATURE_STATUS: ${{ needs.feature-pr-blocker.result }}
+          RELEASE_STATUS: ${{ needs.release-pr-blocker.result }}
+        with:
+          script: |
+            console.log(`FEATURE_STATUS: ${process.env.FEATURE_STATUS}`);
+            console.log(`RELEASE_STATUS: ${process.env.RELEASE_STATUS}`);
+            console.log(`SHA: ${process.env.SHA}`);
+            // Determine the final status based on which job ran
+            let finalStatus = 'failure';
+            if (process.env.FEATURE_STATUS === 'success' || process.env.RELEASE_STATUS === 'success') {
+              finalStatus = 'success';
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.SHA,
+              state: finalStatus,
+              description: finalStatus === 'success' 
+                ? '✅ PR review checklist requirements met' 
+                : '❌ PR review checklist requirements not met',
+              context: 'PR Review Checklist Validation'
+            });
+
+  # test-pr-status:
+  #   name: Test PR Status
+  #   needs: check-pull-request
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Test PR Status
+  #       run: |
+  #         echo "Base branch: ${{ needs.check-pull-request.outputs.base_branch }}"
+  #         echo "Head branch: ${{ needs.check-pull-request.outputs.head_branch }}"
+  # check-pr-status:
+  #   name: Check PR Status
+  #   needs: check-pull-request
+  #   runs-on: ubuntu-latest
+  #   if: ${{ contains( needs.check-pull-request.outputs.base_branch, 'taylor') }}
+  #   steps:
+  #     - name: Check PR Status
+  #       run: |
+  #         echo "Base branch: ${{ needs.check-pull-request.outputs.base_branch }}"
+  #         echo "Head branch: ${{ needs.check-pull-request.outputs.head_branch }}"
